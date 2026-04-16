@@ -700,41 +700,59 @@ def process_direct_items(items_data: list[dict]):
 
         def get_source_sheet(sheet_name):
             if not sheet_name:
+                logger.warning("get_source_sheet: sheet_name is empty")
                 return None
             if sheet_name not in sheet_cache:
                 try:
                     sheet_cache[sheet_name] = client.worksheet(sheet_name)
-                except Exception:
+                    logger.info(f"get_source_sheet: シート '{sheet_name}' を取得しました")
+                except Exception as e:
+                    logger.error(f"get_source_sheet: シート '{sheet_name}' が見つかりません: {e}")
+                    try:
+                        all_sheets = [ws.title for ws in client.worksheets()]
+                        logger.info(f"利用可能なシート一覧: {all_sheets}")
+                    except Exception as e2:
+                        logger.error(f"シート一覧取得失敗: {e2}")
                     sheet_cache[sheet_name] = None
             return sheet_cache[sheet_name]
 
         for item in items_data:
             row_index = item.get("row_index", 0)
             sheet_name = item.get("sheet_name", "")
+            logger.info(f"アイテム処理: row_index={row_index}, sheet_name='{sheet_name}', jan={item.get('jan_code')}")
             src_sheet = get_source_sheet(sheet_name) if row_index > 0 else None
+            if row_index > 0 and src_sheet is None:
+                logger.warning(f"src_sheet が None のためステータス更新をスキップします (row={row_index}, sheet='{sheet_name}')")
 
             if src_sheet and row_index > 0:
                 try:
+                    logger.info(f"ステータスを「処理中」に更新中 (row={row_index})")
                     src_sheet.update_cell(row_index, COL_STATUS, "処理中")
+                    logger.info(f"「処理中」更新完了 (row={row_index})")
                 except Exception as e:
-                    logger.warning(f"Status update failed (row {row_index}): {e}")
+                    logger.warning(f"「処理中」更新失敗 (row {row_index}): {e}")
 
             try:
                 _run_analysis_for_item(amz_searcher, analysis_sheet, item)
                 if src_sheet and row_index > 0:
                     try:
+                        finished_at = get_jst_time()
+                        logger.info(f"ステータスを「完了」に更新中 (row={row_index})")
                         src_sheet.update_cell(row_index, COL_STATUS, "完了")
-                        src_sheet.update_cell(row_index, COL_PROCESSED_AT, now)
+                        src_sheet.update_cell(row_index, COL_PROCESSED_AT, finished_at)
+                        logger.info(f"「完了」更新完了 (row={row_index}, time={finished_at})")
                     except Exception as e:
-                        logger.warning(f"Status update failed (row {row_index}): {e}")
+                        logger.warning(f"「完了」更新失敗 (row {row_index}): {e}")
             except Exception as e:
-                logger.error(f"Item analysis failed (row {row_index}): {e}")
+                logger.error(f"アイテム分析失敗 (row {row_index}): {e}")
                 if src_sheet and row_index > 0:
                     try:
+                        finished_at = get_jst_time()
                         src_sheet.update_cell(row_index, COL_STATUS, "エラー")
-                        src_sheet.update_cell(row_index, COL_PROCESSED_AT, now)
+                        src_sheet.update_cell(row_index, COL_PROCESSED_AT, finished_at)
+                        logger.info(f"「エラー」更新完了 (row={row_index})")
                     except Exception as ue:
-                        logger.warning(f"Status update failed (row {row_index}): {ue}")
+                        logger.warning(f"「エラー」更新失敗 (row {row_index}): {ue}")
 
         logger.info("Direct Items Task Completed.")
     except Exception as e:
