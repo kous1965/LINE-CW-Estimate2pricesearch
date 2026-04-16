@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from fastapi import FastAPI, Request, BackgroundTasks
+from pydantic import BaseModel
 from oauth2client.service_account import ServiceAccountCredentials
 from pypdf import PdfReader
 
@@ -668,57 +669,51 @@ def health():
     return {"status": "running"}
 
 
-@app.post("/trigger/spreadsheet")
-async def trigger_spreadsheet(background_tasks: BackgroundTasks):
-    """
-    入力シートの未処理行（ステータス列が空）を読み取り、バックグラウンドで分析を実行する。
-    Google Apps Script のボタン or onEdit トリガーから呼び出す。
-    """
+class SpreadsheetItem(BaseModel):
+    jan_code: str
+    product_name: str = "Unknown"
+    quantity: str = ""
+    cost: float = 0
+    sender_name: str = "スプレッドシート入力"
+
+
+class SpreadsheetPayload(BaseModel):
+    items: list[SpreadsheetItem]
+
+
+def process_direct_items(items_data: list[dict]):
+    """GASから直接送信されたアイテムリストを分析する"""
+    logger.info(f"Direct Items Task: {len(items_data)} items")
     try:
         client = get_spreadsheet()
-        input_sheet = ensure_input_sheet(client)
+        try:
+            analysis_sheet = client.worksheet("Analysis")
+        except:
+            analysis_sheet = client.add_worksheet("Analysis", 1000, 20)
+            analysis_sheet.append_row(["送信者名", "JAN", "商品名", "モール", "価格", "仕入原価", "店舗名", "送料", "amz分類", "amzランク", "手数料%", "ポイント率", "３辺合計", "送料目安", "利益", "利益率", "備考（yh注文状況、Rレビュー件数）", "URL"])
 
-        all_rows = input_sheet.get_all_values()
-        if len(all_rows) <= 1:
-            return {"status": "ok", "queued": 0, "message": "処理対象の行がありません"}
-
-        pending_items = []
-        for i, row in enumerate(all_rows[1:], start=2):  # 2行目からデータ行
-            # 列数が足りない行は空文字で補完
-            while len(row) < 6:
-                row.append("")
-
-            jan = row[COL_JAN - 1].strip()
-            status = row[COL_STATUS - 1].strip()
-
-            # JANコードがあり、ステータスが未処理（空）の行のみ対象
-            if not jan or status in ("処理中", "完了", "エラー"):
-                continue
-
-            try:
-                cost = float(row[COL_COST - 1].replace(",", "").strip()) if row[COL_COST - 1].strip() else 0
-            except:
-                cost = 0
-
-            item = {
-                "jan_code": jan,
-                "product_name": row[COL_NAME - 1].strip() or "Unknown",
-                "quantity": row[COL_QTY - 1].strip(),
-                "cost": cost,
-                "sender_name": "スプレッドシート入力",
-            }
-            pending_items.append({"row_index": i, "item": item})
-
-        if not pending_items:
-            return {"status": "ok", "queued": 0, "message": "新規の未処理行がありません"}
-
-        background_tasks.add_task(process_spreadsheet_input, pending_items)
-        logger.info(f"/trigger/spreadsheet: {len(pending_items)} items queued.")
-        return {"status": "ok", "queued": len(pending_items), "message": f"{len(pending_items)}件の分析を開始しました"}
-
+        amz_searcher = AmazonSearcher()
+        for item in items_data:
+            _run_analysis_for_item(amz_searcher, analysis_sheet, item)
+        logger.info("Direct Items Task Completed.")
     except Exception as e:
-        logger.error(f"Trigger Spreadsheet Error: {e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Direct Items Error: {e}")
+        logger.error(traceback.format_exc())
+
+
+@app.post("/trigger/spreadsheet")
+async def trigger_spreadsheet(payload: SpreadsheetPayload, background_tasks: BackgroundTasks):
+    """
+    GASが現在のシートのデータをJSONで送信 → バックグラウンドで分析を実行。
+    列構成: A=JANコード, B=商品名, C=数量/在庫, D=仕入れ価格/下代
+    """
+    if not payload.items:
+        return {"status": "ok", "queued": 0, "message": "処理対象の行がありません"}
+
+    items_data = [item.model_dump() for item in payload.items]
+    background_tasks.add_task(process_direct_items, items_data)
+    logger.info(f"/trigger/spreadsheet: {len(items_data)} items queued.")
+    return {"status": "ok", "queued": len(items_data), "message": f"{len(items_data)}件の分析を開始しました"}
 
 @app.post("/webhook/line")
 async def line_webhook(request: Request, background_tasks: BackgroundTasks):
