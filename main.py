@@ -675,6 +675,8 @@ class SpreadsheetItem(BaseModel):
     quantity: str = ""
     cost: float = 0
     sender_name: str = "スプレッドシート入力"
+    row_index: int = 0
+    sheet_name: str = ""
 
 
 class SpreadsheetPayload(BaseModel):
@@ -693,8 +695,47 @@ def process_direct_items(items_data: list[dict]):
             analysis_sheet.append_row(["送信者名", "JAN", "商品名", "モール", "価格", "仕入原価", "店舗名", "送料", "amz分類", "amzランク", "手数料%", "ポイント率", "３辺合計", "送料目安", "利益", "利益率", "備考（yh注文状況、Rレビュー件数）", "URL"])
 
         amz_searcher = AmazonSearcher()
+        now = get_jst_time()
+        sheet_cache = {}
+
+        def get_source_sheet(sheet_name):
+            if not sheet_name:
+                return None
+            if sheet_name not in sheet_cache:
+                try:
+                    sheet_cache[sheet_name] = client.worksheet(sheet_name)
+                except Exception:
+                    sheet_cache[sheet_name] = None
+            return sheet_cache[sheet_name]
+
         for item in items_data:
-            _run_analysis_for_item(amz_searcher, analysis_sheet, item)
+            row_index = item.get("row_index", 0)
+            sheet_name = item.get("sheet_name", "")
+            src_sheet = get_source_sheet(sheet_name) if row_index > 0 else None
+
+            if src_sheet and row_index > 0:
+                try:
+                    src_sheet.update_cell(row_index, COL_STATUS, "処理中")
+                except Exception as e:
+                    logger.warning(f"Status update failed (row {row_index}): {e}")
+
+            try:
+                _run_analysis_for_item(amz_searcher, analysis_sheet, item)
+                if src_sheet and row_index > 0:
+                    try:
+                        src_sheet.update_cell(row_index, COL_STATUS, "完了")
+                        src_sheet.update_cell(row_index, COL_PROCESSED_AT, now)
+                    except Exception as e:
+                        logger.warning(f"Status update failed (row {row_index}): {e}")
+            except Exception as e:
+                logger.error(f"Item analysis failed (row {row_index}): {e}")
+                if src_sheet and row_index > 0:
+                    try:
+                        src_sheet.update_cell(row_index, COL_STATUS, "エラー")
+                        src_sheet.update_cell(row_index, COL_PROCESSED_AT, now)
+                    except Exception as ue:
+                        logger.warning(f"Status update failed (row {row_index}): {ue}")
+
         logger.info("Direct Items Task Completed.")
     except Exception as e:
         logger.error(f"Direct Items Error: {e}")

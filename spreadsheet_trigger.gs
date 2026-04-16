@@ -52,7 +52,9 @@ function runAnalysis() {
       product_name: name,
       quantity:     qty,
       cost:         cost,
-      sender_name:  sheetName  // どのシートから送信したか記録
+      sender_name:  sheetName,  // どのシートから送信したか記録
+      row_index:    i,           // ステータス更新のための行番号
+      sheet_name:   sheetName    // ステータス更新のためのシート名
     });
   }
 
