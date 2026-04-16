@@ -707,7 +707,12 @@ async def trigger_spreadsheet(payload: SpreadsheetPayload, background_tasks: Bac
     GASが現在のシートのデータをJSONで送信 → バックグラウンドで分析を実行。
     列構成: A=JANコード, B=商品名, C=数量/在庫, D=仕入れ価格/下代
     """
+    logger.info(f"/trigger/spreadsheet called: {len(payload.items)} items received")
+    for i, item in enumerate(payload.items):
+        logger.info(f"  [{i+1}] JAN={item.jan_code}, name={item.product_name}, cost={item.cost}")
+
     if not payload.items:
+        logger.warning("/trigger/spreadsheet: no items in payload")
         return {"status": "ok", "queued": 0, "message": "処理対象の行がありません"}
 
     items_data = [item.model_dump() for item in payload.items]
