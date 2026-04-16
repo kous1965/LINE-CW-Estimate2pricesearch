@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+requests
+pandas
+gspread
+oauth2client
+google-api-python-client
+openai
+pypdf
+selenium
+webdriver-manager
+python-amazon-sp-api
+openpyxl

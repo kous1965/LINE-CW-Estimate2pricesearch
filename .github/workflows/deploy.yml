@@ -1,0 +1,79 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main  # main ブランチへの push で自動デプロイ
+
+env:
+  GCP_REGION: asia-northeast1
+  SERVICE_NAME: my-estimate-app
+  IMAGE: asia-northeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/my-estimate-app/app
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. ソースコードをチェックアウト
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. GCP 認証（サービスアカウントキーを使用）
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # 3. gcloud CLI のセットアップ
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # 4. Artifact Registry への Docker 認証
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker asia-northeast1-docker.pkg.dev --quiet
+
+      # 5. Docker イメージのビルドとプッシュ
+      - name: Build and push Docker image
+        run: |
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+      # 6. Cloud Run へデプロイ
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE_NAME \
+            --image $IMAGE:${{ github.sha }} \
+            --region $GCP_REGION \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --memory 1Gi \
+            --cpu 1 \
+            --timeout 300 \
+            --concurrency 10 \
+            --set-env-vars="\
+          LINE_ACCESS_TOKEN=${{ secrets.LINE_ACCESS_TOKEN }},\
+          CHATWORK_TOKEN=${{ secrets.CHATWORK_TOKEN }},\
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},\
+          SHEET_KEY=${{ secrets.SHEET_KEY }},\
+          YAHOO_APP_ID=${{ secrets.YAHOO_APP_ID }},\
+          RAKUTEN_APP_ID=${{ secrets.RAKUTEN_APP_ID }},\
+          LWA_APP_ID=${{ secrets.LWA_APP_ID }},\
+          LWA_CLIENT_SECRET=${{ secrets.LWA_CLIENT_SECRET }},\
+          REFRESH_TOKEN=${{ secrets.REFRESH_TOKEN }},\
+          AWS_ACCESS_KEY=${{ secrets.AWS_ACCESS_KEY }},\
+          AWS_SECRET_KEY=${{ secrets.AWS_SECRET_KEY }},\
+          ROLE_ARN=${{ secrets.ROLE_ARN }},\
+          KEEPA_API_KEY=${{ secrets.KEEPA_API_KEY }},\
+          GOOGLE_SHEETS_CREDENTIALS_B64=${{ secrets.GOOGLE_SHEETS_CREDENTIALS_B64 }}"
+
+      # 7. デプロイ先 URL を出力
+      - name: Show deployed URL
+        run: |
+          echo "✅ Deployed to:"
+          gcloud run services describe $SERVICE_NAME \
+            --region $GCP_REGION \
+            --format="value(status.url)"
