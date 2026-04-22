@@ -421,119 +421,112 @@ def get_rakuten_info(jan_code, cost_price=0):
 #  MODULE 4: Yahoo Logic (API + Scraping Hybrid)
 # ==============================================================================
 
-def get_yahoo_info(jan):
-    # 結果格納用辞書の初期化
-    result = { 
-        "mall": "Yahoo", 
-        "price": 0, 
-        "points_pct": 0, 
-        "fee_rate": 0.10, 
-        "shipping": 0, 
-        "url": "", 
-        "seller": "-", 
-        "rank": "-", 
-        "category": "-", 
-        "order_info": "-", 
-        "calc_shipping": 0, 
-        "dimensions": "-" 
-    }
+def _scrape_yahoo_order_info(url):
+    """Yahoo商品ページから注文状況テキストをスクレイピングして返す。取得できなければ空文字。"""
+    driver = None
+    try:
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
+        service = Service("/usr/bin/chromedriver")
+        if not os.path.exists("/usr/bin/chromedriver"):
+            service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.get(url)
+        time.sleep(2)
+        try:
+            btext = driver.find_element(By.TAG_NAME, "body").text
+            if "24時間以内に注文" in btext: return "24時間以内に注文した方がいます"
+            elif "3日以内に注文" in btext: return "3日以内に注文した方がいます"
+            elif "7日以内に注文" in btext: return "7日以内に注文した方がいます"
+            elif "人がカート" in btext or "人が検討" in btext:
+                match = re.search(r"(\d+人が(カート|検討).*?います)", btext)
+                if match: return match.group(1)
+        except: pass
+    except Exception as e:
+        logger.error(f"Yahoo Scraping Error (Order Info): {e}")
+    finally:
+        if driver: driver.quit()
+    return ""
 
-    # 1. APIによる価格・商品情報の取得
+
+def get_yahoo_info(jan):
+    """
+    Yahoo最安・優良配送情報を取得してリストで返す。
+    - 最安が優良配送の場合: 1件（"優良配送 / 注文状況"）
+    - 最安が優良配送でない場合: 最大2件（"最安 / 注文状況" + "優良配送最安"）
+    """
+    empty = { "mall": "Yahoo", "price": 0, "points_pct": 0, "fee_rate": 0.10, "shipping": 0,
+              "url": "", "seller": "-", "rank": "-", "category": "-", "order_info": "-",
+              "calc_shipping": 0, "dimensions": "-" }
+
     if not YAHOO_APP_ID:
         logger.error("Yahoo App ID is missing.")
-        return result
+        return [empty]
 
     api_url = "https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch"
-    params = {
-        "appid": YAHOO_APP_ID,
-        "jan_code": jan,
-        "sort": "+price",      # 安い順
-        "condition": "new",    # 新品のみ
-        "results": 1           # 最安の1件だけ取得
-    }
+    params = { "appid": YAHOO_APP_ID, "jan_code": jan, "sort": "+price", "condition": "new", "results": 20 }
 
     try:
         res = requests.get(api_url, params=params)
         data = res.json()
-        
         hits = data.get("hits", [])
         if not hits:
-            return result
+            return [empty]
 
-        # 最安値商品の情報を抽出
-        best_item = hits[0]
-        result["price"] = best_item.get("price", 0)
-        result["seller"] = best_item.get("seller", {}).get("name", "-")
-        result["url"] = best_item.get("url", "")
-        
-        # ポイント倍率の取得 (APIは倍率を返すため、%になおすために /100 する)
-        point_times = best_item.get("point", {}).get("times", 0)
-        result["points_pct"] = point_times / 100
+        def build_result(hit):
+            shipping_name = (hit.get("shipping") or {}).get("name", "")
+            point_times = (hit.get("point") or {}).get("times", 0)
+            r = {
+                "mall": "Yahoo",
+                "price": hit.get("price", 0),
+                "points_pct": point_times / 100,
+                "fee_rate": 0.10,
+                "shipping": 0,
+                "url": hit.get("url", ""),
+                "seller": (hit.get("seller") or {}).get("name", "-"),
+                "rank": "-", "category": "-", "order_info": "-",
+                "calc_shipping": 0, "dimensions": "-"
+            }
+            return r, "優良配送" in shipping_name
 
-        # 送料情報の簡易判定 (APIのshipping.codeやnameから判定)
-        shipping_info = best_item.get("shipping", {})
-        shipping_code = shipping_info.get("code")
-        shipping_name = shipping_info.get("name", "")
-        
-        if shipping_code == 2 or "無料" in shipping_name or "0円" in shipping_name:
-            result["shipping"] = 0
+        cheapest_result, cheapest_is_yuryo = build_result(hits[0])
+
+        # 最安店舗の注文状況をスクレイピング
+        order_status = _scrape_yahoo_order_info(cheapest_result["url"]) if cheapest_result["url"] else ""
+
+        if cheapest_is_yuryo:
+            # 最安 = 優良配送 → 1行
+            label = "優良配送"
+            if order_status:
+                label += f" / {order_status}"
+            cheapest_result["order_info"] = label
+            return [cheapest_result]
         else:
-            result["shipping"] = 0 
+            # 最安が優良配送でない → 最安行 + 優良配送最安行（あれば）
+            label = "最安"
+            if order_status:
+                label += f" / {order_status}"
+            cheapest_result["order_info"] = label
+
+            yuryo_result = None
+            for hit in hits:
+                shipping_name = (hit.get("shipping") or {}).get("name", "")
+                if "優良配送" in shipping_name:
+                    r, _ = build_result(hit)
+                    r["order_info"] = "優良配送最安"
+                    yuryo_result = r
+                    break
+
+            return [cheapest_result] + ([yuryo_result] if yuryo_result else [])
 
     except Exception as e:
         logger.error(f"Yahoo API Error: {e}")
-        return result
-
-    # 2. Seleniumによる「注文状況」のスクレイピング (商品が見つかった場合のみ実行)
-    if result["url"]:
-        driver = None
-        try:
-            # ブラウザ設定
-            options = webdriver.ChromeOptions()
-            options.add_argument('--headless')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
-            
-            service = Service("/usr/bin/chromedriver")
-            if not os.path.exists("/usr/bin/chromedriver"): 
-                service = Service(ChromeDriverManager().install())
-            
-            driver = webdriver.Chrome(service=service, options=options)
-            
-            # APIで取得した商品URLへ直接アクセス
-            driver.get(result["url"])
-            time.sleep(2) # ページ読み込み待機
-
-            # ページ内のテキストを取得して判定
-            try:
-                btext = driver.find_element(By.TAG_NAME, "body").text
-                found_on_page = ""
-                
-                if "24時間以内に注文" in btext: 
-                    found_on_page = "24時間以内に注文した方がいます"
-                elif "3日以内に注文" in btext: 
-                    found_on_page = "3日以内に注文した方がいます"
-                elif "7日以内に注文" in btext: 
-                    found_on_page = "7日以内に注文した方がいます"
-                elif "人がカート" in btext or "人が検討" in btext:
-                    match = re.search(r"(\d+人が(カート|検討).*?います)", btext)
-                    if match: found_on_page = match.group(1)
-                
-                if found_on_page:
-                    result["order_info"] = found_on_page
-            except:
-                pass # 要素が見つからない場合等は無視
-
-        except Exception as e:
-            logger.error(f"Yahoo Scraping Error (Order Info): {e}")
-        finally:
-            if driver:
-                driver.quit()
-
-    return result
+        return [empty]
 
 # ==============================================================================
 #  CORE Logic
@@ -573,16 +566,17 @@ def _run_analysis_for_item(amz_searcher, sheet2, item):
         amz_data = amz_searcher.get_product_details_accurate(asin)
 
     rak_data = get_rakuten_info(jan, cost)
-    yah_data = get_yahoo_info(jan)
+    yah_list = get_yahoo_info(jan)
 
     estimated_shipping_fee = amz_data.get('calc_shipping', 0)
     item_dimensions = amz_data.get('dimensions', '-')
     rak_data['calc_shipping'] = estimated_shipping_fee
     rak_data['dimensions'] = item_dimensions
-    yah_data['calc_shipping'] = estimated_shipping_fee
-    yah_data['dimensions'] = item_dimensions
+    for yah_data in yah_list:
+        yah_data['calc_shipping'] = estimated_shipping_fee
+        yah_data['dimensions'] = item_dimensions
 
-    for data in [amz_data, rak_data, yah_data]:
+    for data in [amz_data, rak_data] + yah_list:
         profit, margin = calculate_profit(data, cost)
         shipping_display = data.get("shipping_text", data["shipping"])
         if data['mall'] == 'Amazon' and data['shipping'] == 0:
