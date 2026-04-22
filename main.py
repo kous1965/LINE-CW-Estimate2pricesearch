@@ -478,6 +478,14 @@ def get_yahoo_info(jan):
         if not hits:
             return [empty]
 
+        # デバッグ: 最初のhitの配送関連フィールドを全てログ出力
+        if hits:
+            h0 = hits[0]
+            logger.info(f"[Yahoo debug] shipping={h0.get('shipping')}")
+            logger.info(f"[Yahoo debug] delivery={h0.get('delivery')}")
+            logger.info(f"[Yahoo debug] seller={h0.get('seller')}")
+            logger.info(f"[Yahoo debug] all keys={list(h0.keys())}")
+
         def build_result(hit):
             shipping_name = (hit.get("shipping") or {}).get("name", "")
             point_times = (hit.get("point") or {}).get("times", 0)
