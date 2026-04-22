@@ -491,8 +491,11 @@ def get_yahoo_info(jan):
                 "rank": "-", "category": "-", "order_info": "-",
                 "calc_shipping": 0, "dimensions": "-"
             }
-            # deliveryフィールドが存在すれば優良配送
-            return r, bool(hit.get("delivery"))
+            # delivery.day <= 2（2日以内配送）が優良配送の条件
+            delivery = hit.get("delivery") or {}
+            day = delivery.get("day")
+            is_yuryo = day is not None and day <= 2
+            return r, is_yuryo
 
         cheapest_result, cheapest_is_yuryo = build_result(hits[0])
 
@@ -515,7 +518,9 @@ def get_yahoo_info(jan):
 
             yuryo_result = None
             for hit in hits:
-                if hit.get("delivery"):
+                delivery = hit.get("delivery") or {}
+                day = delivery.get("day")
+                if day is not None and day <= 2:
                     r, _ = build_result(hit)
                     r["order_info"] = "優良配送最安"
                     yuryo_result = r
