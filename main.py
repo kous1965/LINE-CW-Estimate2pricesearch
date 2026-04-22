@@ -292,10 +292,16 @@ class AmazonSearcher:
                     self.log(f"❌ API Error: {error_str}")
                     if i == retries - 1: return None
         return None
-    def calculate_shipping_fee(self, h, l, w):
+    def calculate_shipping_fee(self, h, l, w, weight_kg=None):
         try:
-            total_size = float(h) + float(l) + float(w)
-            if total_size < 60: return 580
+            dims = [float(h), float(l), float(w)]
+            total_size = sum(dims)
+            longest = max(dims)
+            thinnest = min(dims)
+            # ネコポス条件: 三辺合計60cm以内 / 長辺34cm以内 / 厚さ3cm以内 / 重量1kg以内
+            weight_ok = (weight_kg is None) or (weight_kg <= 1.0)
+            if total_size <= 60 and longest <= 34 and thinnest <= 3 and weight_ok: return 230
+            elif total_size < 60: return 580
             elif total_size <= 80: return 670
             elif total_size <= 100: return 780
             elif total_size <= 120: return 900
@@ -319,13 +325,26 @@ class AmazonSearcher:
             result['url'] = f"https://www.amazon.co.jp/dp/{asin}"
             if 'attributes' in data:
                 attrs = data['attributes']
+                weight_kg = None
+                if 'item_package_weight' in attrs:
+                    wt = attrs['item_package_weight'][0]
+                    wt_val = float(wt.get('value', 0) or 0)
+                    wt_unit = (wt.get('unit') or '').lower()
+                    if wt_unit in ('kilograms', 'kilogram', 'kg'):
+                        weight_kg = wt_val
+                    elif wt_unit in ('grams', 'gram', 'g'):
+                        weight_kg = wt_val / 1000
+                    elif wt_unit in ('pounds', 'pound', 'lb', 'lbs'):
+                        weight_kg = wt_val * 0.453592
+                    elif wt_unit in ('ounces', 'ounce', 'oz'):
+                        weight_kg = wt_val * 0.0283495
                 if 'item_package_dimensions' in attrs:
                     dim = attrs['item_package_dimensions'][0]
                     h = (dim.get('height') or {}).get('value', 0)
                     l = (dim.get('length') or {}).get('value', 0)
                     w = (dim.get('width') or {}).get('value', 0)
                     result['dimensions'] = int(h + l + w)
-                    result['calc_shipping'] = self.calculate_shipping_fee(h, l, w)
+                    result['calc_shipping'] = self.calculate_shipping_fee(h, l, w, weight_kg)
             if 'salesRanks' in data and data['salesRanks']:
                 ranks = data['salesRanks'][0].get('ranks', [])
                 if ranks:
