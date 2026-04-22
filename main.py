@@ -478,16 +478,7 @@ def get_yahoo_info(jan):
         if not hits:
             return [empty]
 
-        # デバッグ: 最初のhitの配送関連フィールドを全てログ出力
-        if hits:
-            h0 = hits[0]
-            logger.info(f"[Yahoo debug] shipping={h0.get('shipping')}")
-            logger.info(f"[Yahoo debug] delivery={h0.get('delivery')}")
-            logger.info(f"[Yahoo debug] seller={h0.get('seller')}")
-            logger.info(f"[Yahoo debug] all keys={list(h0.keys())}")
-
         def build_result(hit):
-            shipping_name = (hit.get("shipping") or {}).get("name", "")
             point_times = (hit.get("point") or {}).get("times", 0)
             r = {
                 "mall": "Yahoo",
@@ -500,7 +491,8 @@ def get_yahoo_info(jan):
                 "rank": "-", "category": "-", "order_info": "-",
                 "calc_shipping": 0, "dimensions": "-"
             }
-            return r, "優良配送" in shipping_name
+            # deliveryフィールドが存在すれば優良配送
+            return r, bool(hit.get("delivery"))
 
         cheapest_result, cheapest_is_yuryo = build_result(hits[0])
 
@@ -523,8 +515,7 @@ def get_yahoo_info(jan):
 
             yuryo_result = None
             for hit in hits:
-                shipping_name = (hit.get("shipping") or {}).get("name", "")
-                if "優良配送" in shipping_name:
+                if hit.get("delivery"):
                     r, _ = build_result(hit)
                     r["order_info"] = "優良配送最安"
                     yuryo_result = r
