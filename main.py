@@ -67,6 +67,10 @@ AWS_SECRET_KEY = get_clean_env("AWS_SECRET_KEY")
 ROLE_ARN = get_clean_env("ROLE_ARN", "")
 KEEPA_API_KEY = get_clean_env("KEEPA_API_KEY")
 
+# --- Chatwork アラート設定 ---
+ALERT_CW_ROOM_ID = "386446846"
+ALERT_CW_HANDLE = "peco05410"  # 代表 中井 LifeStyle
+
 app = FastAPI()
 
 # 起動時にキーの状態をログに出力
@@ -101,6 +105,49 @@ def get_chatwork_name(room_id, account_id):
     except Exception as e:
         logger.error(f"Chatwork Name Error: {e}")
     return f"CWユーザー(ID:{account_id})"
+
+# Chatworkアラート送信用 account_id キャッシュ
+_cw_account_id_cache = {}
+
+def _get_alert_cw_account_id():
+    """ALERT_CW_HANDLEに対応するChatwork account_idをルームメンバーから取得（キャッシュあり）"""
+    if ALERT_CW_HANDLE in _cw_account_id_cache:
+        return _cw_account_id_cache[ALERT_CW_HANDLE]
+    if not CHATWORK_TOKEN:
+        return None
+    url = f"https://api.chatwork.com/v2/rooms/{ALERT_CW_ROOM_ID}/members"
+    headers = {"X-ChatWorkToken": CHATWORK_TOKEN}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            for m in res.json():
+                if m.get("chatwork_id") == ALERT_CW_HANDLE:
+                    _cw_account_id_cache[ALERT_CW_HANDLE] = m["account_id"]
+                    return m["account_id"]
+    except Exception as e:
+        logger.error(f"Alert account_id lookup error: {e}")
+    return None
+
+def _send_chatwork_alert(message: str):
+    """ALERT_CW_ROOM_IDに代表 中井へのメンション付きでメッセージを送信する"""
+    if not CHATWORK_TOKEN:
+        logger.warning("CHATWORK_TOKEN missing, skip alert.")
+        return
+    account_id = _get_alert_cw_account_id()
+    if account_id:
+        body = f"[To:{account_id}] 代表 中井\n{message}"
+    else:
+        body = message
+    url = f"https://api.chatwork.com/v2/rooms/{ALERT_CW_ROOM_ID}/messages"
+    headers = {"X-ChatWorkToken": CHATWORK_TOKEN}
+    try:
+        res = requests.post(url, headers=headers, data={"body": body}, timeout=10)
+        if res.status_code in (200, 201):
+            logger.info("Chatwork alert sent OK.")
+        else:
+            logger.error(f"Chatwork alert failed: {res.status_code} {res.text}")
+    except Exception as e:
+        logger.error(f"Chatwork alert send error: {e}")
 
 # LINE名前取得
 def get_line_user_name(source):
@@ -533,6 +580,72 @@ def get_yahoo_info(jan):
         return [empty]
 
 # ==============================================================================
+#  MODULE 4b: Yahoo Chatwork アラート
+# ==============================================================================
+
+_ORDER_KEYWORDS = ["24時間以内", "3日以内", "7日以内"]
+
+def _maybe_send_yahoo_alert(yah_list: list, cost: float, name: str, jan: str):
+    """
+    Yahoo結果に対してアラート条件をチェックし、条件を満たす場合はChatworkへ通知する。
+    送信条件:
+      (利益額 >= 150円 OR 利益率 >= 5%) AND (24時間以内/3日以内/7日以内に注文あり)
+    優良配送価格で条件を満たす場合は最安価格と優良配送最安価格の両方を表示。
+    """
+    # 注文状況チェック
+    order_text = ""
+    for item in yah_list:
+        info = item.get("order_info") or ""
+        m = re.search(r"(24時間以内|3日以内|7日以内)に注文した方がいます", info)
+        if m:
+            order_text = m.group(0)
+            break
+    if not order_text:
+        return
+
+    PROFIT_MIN = 150
+    MARGIN_MIN = 0.05
+
+    cheapest = yah_list[0]
+    cheapest_profit, cheapest_margin = calculate_profit(cheapest, cost)
+    cheapest_is_yuryo = "優良配送" in (cheapest.get("order_info") or "")
+
+    yuryo_item = None
+    yuryo_profit = 0
+    yuryo_margin = 0.0
+    if len(yah_list) >= 2:
+        yuryo_item = yah_list[1]
+        yuryo_profit, yuryo_margin = calculate_profit(yuryo_item, cost)
+
+    cheapest_ok = cheapest_profit >= PROFIT_MIN or cheapest_margin >= MARGIN_MIN
+    yuryo_ok = yuryo_item is not None and (yuryo_profit >= PROFIT_MIN or yuryo_margin >= MARGIN_MIN)
+
+    if not (cheapest_ok or yuryo_ok):
+        return
+
+    lines = [
+        "【ヤフーショッピング仕入れ候補】",
+        f"商品名: {name}",
+        f"JANコード: {jan}",
+        f"仕入原価: {int(cost)}円",
+        f"注文状況: {order_text}",
+        "",
+    ]
+
+    if yuryo_ok and yuryo_item and not cheapest_is_yuryo:
+        # 優良配送価格で条件を満たす → 最安と優良配送最安の両方を表示
+        lines.append(f"最安価格: {cheapest['price']}円　(利益: {cheapest_profit}円 / 利益率: {cheapest_margin:.1%})")
+        lines.append(f"優良配送最安価格: {yuryo_item['price']}円　(利益: {yuryo_profit}円 / 利益率: {yuryo_margin:.1%})")
+        lines.append(f"URL: {yuryo_item['url'] or cheapest['url']}")
+    else:
+        label = "優良配送最安価格" if cheapest_is_yuryo else "最安価格"
+        lines.append(f"{label}: {cheapest['price']}円　(利益: {cheapest_profit}円 / 利益率: {cheapest_margin:.1%})")
+        lines.append(f"URL: {cheapest['url']}")
+
+    _send_chatwork_alert("\n".join(lines))
+
+
+# ==============================================================================
 #  CORE Logic
 # ==============================================================================
 
@@ -579,6 +692,8 @@ def _run_analysis_for_item(amz_searcher, sheet2, item):
     for yah_data in yah_list:
         yah_data['calc_shipping'] = estimated_shipping_fee
         yah_data['dimensions'] = item_dimensions
+
+    _maybe_send_yahoo_alert(yah_list, cost, name, jan)
 
     for data in [amz_data, rak_data] + yah_list:
         profit, margin = calculate_profit(data, cost)
